@@ -45,6 +45,9 @@ type ErrorDetail struct {
 }
 
 const idempotencyKeyMetadataKey = "idempotency_key"
+const authIndexMetadataKey = "auth_index"
+const authIndexHeaderName = "X-Auth-Index"
+const authIndexHeaderAltName = "X-AuthIndex"
 
 const (
 	defaultStreamingKeepAliveSeconds = 0
@@ -143,15 +146,24 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	// Idempotency-Key is an optional client-supplied header used to correlate retries.
 	// It is forwarded as execution metadata; when absent we generate a UUID.
 	key := ""
+	authIndex := ""
 	if ctx != nil {
 		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
+			authIndex = strings.TrimSpace(ginCtx.GetHeader(authIndexHeaderName))
+			if authIndex == "" {
+				authIndex = strings.TrimSpace(ginCtx.GetHeader(authIndexHeaderAltName))
+			}
 		}
 	}
 	if key == "" {
 		key = uuid.NewString()
 	}
-	return map[string]any{idempotencyKeyMetadataKey: key}
+	meta := map[string]any{idempotencyKeyMetadataKey: key}
+	if authIndex != "" {
+		meta[authIndexMetadataKey] = authIndex
+	}
+	return meta
 }
 
 func mergeMetadata(base, overlay map[string]any) map[string]any {

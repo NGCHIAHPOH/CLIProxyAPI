@@ -1295,6 +1295,47 @@ func (m *Manager) GetByID(id string) (*Auth, bool) {
 	return auth.Clone(), true
 }
 
+func authIndexFromMetadata(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	if raw, ok := meta["auth_index"]; ok {
+		if value, ok := raw.(string); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	if raw, ok := meta["authIndex"]; ok {
+		if value, ok := raw.(string); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (m *Manager) authByIndexLocked(provider, model, index string, tried map[string]struct{}, registryRef *registry.ModelRegistry) *Auth {
+	index = strings.TrimSpace(index)
+	if index == "" || m == nil {
+		return nil
+	}
+	modelKey := strings.TrimSpace(model)
+	for _, candidate := range m.auths {
+		if candidate == nil || candidate.Provider != provider || candidate.Disabled {
+			continue
+		}
+		if _, used := tried[candidate.ID]; used {
+			continue
+		}
+		if strings.TrimSpace(candidate.Index) != index {
+			continue
+		}
+		if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(candidate.ID, modelKey) {
+			continue
+		}
+		return candidate
+	}
+	return nil
+}
+
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -1305,6 +1346,24 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	registryRef := registry.GetGlobalRegistry()
+	if authIndex := authIndexFromMetadata(opts.Metadata); authIndex != "" {
+		selected := m.authByIndexLocked(provider, model, authIndex, tried, registryRef)
+		if selected == nil {
+			m.mu.RUnlock()
+			return nil, nil, &Error{Code: "auth_not_found", Message: "auth index not found"}
+		}
+		authCopy := selected.Clone()
+		m.mu.RUnlock()
+		if !selected.indexAssigned {
+			m.mu.Lock()
+			if current := m.auths[authCopy.ID]; current != nil && !current.indexAssigned {
+				current.EnsureIndex()
+				authCopy = current.Clone()
+			}
+			m.mu.Unlock()
+		}
+		return authCopy, executor, nil
+	}
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
 			continue
@@ -1360,6 +1419,57 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	candidates := make([]*Auth, 0, len(m.auths))
 	modelKey := strings.TrimSpace(model)
 	registryRef := registry.GetGlobalRegistry()
+	if authIndex := authIndexFromMetadata(opts.Metadata); authIndex != "" {
+		var selected *Auth
+		var providerKey string
+		for _, candidate := range m.auths {
+			if candidate == nil || candidate.Disabled {
+				continue
+			}
+			if _, used := tried[candidate.ID]; used {
+				continue
+			}
+			if strings.TrimSpace(candidate.Index) != strings.TrimSpace(authIndex) {
+				continue
+			}
+			key := strings.TrimSpace(strings.ToLower(candidate.Provider))
+			if key == "" {
+				continue
+			}
+			if _, ok := providerSet[key]; !ok {
+				continue
+			}
+			if _, ok := m.executors[key]; !ok {
+				continue
+			}
+			if modelKey != "" && registryRef != nil && !registryRef.ClientSupportsModel(candidate.ID, modelKey) {
+				continue
+			}
+			selected = candidate
+			providerKey = key
+			break
+		}
+		if selected == nil {
+			m.mu.RUnlock()
+			return nil, nil, "", &Error{Code: "auth_not_found", Message: "auth index not found"}
+		}
+		executor, okExecutor := m.executors[providerKey]
+		if !okExecutor {
+			m.mu.RUnlock()
+			return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+		}
+		authCopy := selected.Clone()
+		m.mu.RUnlock()
+		if !selected.indexAssigned {
+			m.mu.Lock()
+			if current := m.auths[authCopy.ID]; current != nil && !current.indexAssigned {
+				current.EnsureIndex()
+				authCopy = current.Clone()
+			}
+			m.mu.Unlock()
+		}
+		return authCopy, executor, providerKey, nil
+	}
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
 			continue
