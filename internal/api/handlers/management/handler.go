@@ -132,7 +132,7 @@ func (h *Handler) SetLogDirectory(dir string) {
 // All requests (local and remote) require a valid management key.
 // Additionally, remote access requires allow-remote-management=true.
 func (h *Handler) Middleware() gin.HandlerFunc {
-	const maxFailures = 5
+	const maxFailures = 0
 	const banDuration = 30 * time.Minute
 
 	return func(c *gin.Context) {
@@ -189,7 +189,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 				}
 				aip.count++
 				aip.lastActivity = time.Now()
-				if aip.count >= maxFailures {
+				if maxFailures > 0 && aip.count >= maxFailures {
 					aip.blockedUntil = time.Now().Add(banDuration)
 					aip.count = 0
 				}
